@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trajectory Visualizer</title>
+    
+    <!-- Leaflet CSS for the interactive map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    
+    <!-- Leaflet JavaScript library -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- SheetJS/xlsx library for parsing Excel files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f2f5;
+        }
+        #map { 
+            height: 65vh; 
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background-color: #e9ecef;
+        }
+        .leaflet-popup-content-wrapper {
+            border-radius: 0.5rem;
+        }
+        .leaflet-popup-content {
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+        }
+        .popup-title {
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 4px;
+        }
+        .popup-content code {
+            background-color: #e2e8f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        /* Styling for the permanent location labels */
+        .location-label {
+            background-color: rgba(255, 255, 255, 0.85);
+            border-color: #555;
+            border-radius: 4px;
+            font-weight: bold;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            padding: 3px 6px;
+            font-size: 12px;
+            color: #333;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Asset Trajectory Visualizer</h1>
+            <p class="text-gray-600 mt-1">Upload an Excel or CSV file to visualize asset trajectories as smooth paths.</p>
+        </header>
+
+        <div class="max-w-xl mx-auto mb-8">
+            <!-- File Upload Section -->
+            <div class="p-4 border-2 border-dashed rounded-lg bg-gray-50">
+                <label for="file-input" class="block text-lg font-medium text-gray-700 mb-2">Upload Trajectory File</label>
+                <input type="file" id="file-input" accept=".csv, .xlsx, .xls" class="block w-full text-sm text-gray-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-full file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-blue-50 file:text-blue-700
+                    hover:file:bg-blue-100 cursor-pointer"/>
+            </div>
+        </div>
+
+        <!-- The map will be rendered in this div -->
+        <div id="map"></div>
+
+        <!-- The raw lat/long data will be displayed here -->
+        <div class="mt-8">
+            <h2 class="text-2xl font-bold text-gray-800">Extracted Trajectory Data</h2>
+            <p class="text-gray-600 mb-4">Coordinate data from the uploaded file will appear here.</p>
+            <div id="trajectory-data" class="bg-gray-100 p-4 rounded-lg shadow-inner h-96 overflow-y-auto text-sm font-mono">
+                <p class="text-gray-500" id="data-placeholder">Please upload a file to see trajectory data.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.addEventListener('load', function () {
+            let map;
+            let fileTrajectoryLayerGroup;
+
+            // --- 1. Map Initialization ---
+            function initializeMap() {
+                // Defensive check to ensure Leaflet is loaded
+                if (typeof L === 'undefined') {
+                    console.error('Leaflet library not loaded.');
+                    const mapDiv = document.getElementById('map');
+                    mapDiv.innerHTML = '<div class="w-full h-full flex items-center justify-center bg-red-100 text-red-700 rounded-lg"><p>Error: Mapping library could not be loaded.</p></div>';
+                    return;
+                }
+
+                if (map) map.remove();
+                map = L.map('map').setView([-2.5, 118], 5); 
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }).addTo(map);
+                
+                fileTrajectoryLayerGroup = L.layerGroup().addTo(map);
+            }
+            
+            // --- 2. Data Processing for Uploaded Files ---
+            function processAndVisualize(csvContent) {
+                if (!map) return; // Don't run if map failed to initialize
+                fileTrajectoryLayerGroup.clearLayers();
+                clearDataOutput();
+
+                const allPointsForBounds = [];
+                const rows = csvContent.trim().split('\n').slice(1);
+
+                if (rows.length === 0) {
+                    setDataPlaceholder('No data rows found in the file.', 'red');
+                    return;
+                }
+
+                rows.forEach((row, index) => {
+                    const cols = row.split(',');
+                    
+                    const parseLocalizedFloat = (val) => {
+                        if (typeof val !== 'string' || val.trim() === '') return NaN;
+                        return parseFloat(val.replace(',', '.'));
+                    };
+                    
+                    const locationStartName = cols[0] ? cols[0].trim() : null;
+                    const locationEndName = cols[7] ? cols[7].trim() : null;
+
+                    const p0_lat = parseLocalizedFloat(cols[1]), p0_lng = parseLocalizedFloat(cols[2]);
+                    const p1_lat = parseLocalizedFloat(cols[3]), p1_lng = parseLocalizedFloat(cols[4]);
+                    const p2_lat = parseLocalizedFloat(cols[5]), p2_lng = parseLocalizedFloat(cols[6]);
+                    const p3_lat = parseLocalizedFloat(cols[8]), p3_lng = parseLocalizedFloat(cols[9]);
+
+                    if (!isNaN(p0_lat) && !isNaN(p0_lng) && !isNaN(p1_lat) && !isNaN(p1_lng) && !isNaN(p2_lat) && !isNaN(p2_lng) && !isNaN(p3_lat) && !isNaN(p3_lng)) {
+                        
+                        const p0 = L.latLng(p0_lat, p0_lng);
+                        const p1 = L.latLng(p1_lat, p1_lng);
+                        const p2 = L.latLng(p2_lat, p2_lng);
+                        const p3 = L.latLng(p3_lat, p3_lng);
+
+                        const curvePoints = calculateCubicBezierPoints(p0, p1, p2, p3, 50);
+
+                        allPointsForBounds.push(...curvePoints);
+                        L.polyline(curvePoints, { color: '#0055b3', weight: 3, opacity: 0.8 }).addTo(fileTrajectoryLayerGroup);
+                        
+                        const p0_popup = `<div class="popup-title">Start Point (P0)</div><div class="popup-content"><b>Name:</b> ${locationStartName || 'N/A'}<br><b>From:</b> code>latitude_start</code>, <code>longitude_start</code></div>`;
+                        const p3_popup = `<div class="popup-title">End Point (P3)</div><div class="popup-content"><b>Name:</b> ${locationEndName || 'N/A'}<br><b>From:</b> <code>latitude_end</code>, <code>longitude_end</code></div>`;
+                        const p1_popup = `<div class="popup-title">Control Point 1 (P1)</div><div class="popup-content">From columns: <code>trajectory_latitude</code>, <code>trajectory_longitude</code></div>`;
+                        const p2_popup = `<div class="popup-title">Control Point 2 (P2)</div><div class="popup-content">From columns: <code>trajectory_latitude_2</code>, <code>trajectory_longitude_2</code></div>`;
+
+                        const p0Marker = L.circleMarker(p0, { radius: 6, color: '#28a745', fillColor: '#28a745', fillOpacity: 1.0 }).addTo(fileTrajectoryLayerGroup).bindPopup(p0_popup);
+                        if (locationStartName) {
+                            p0Marker.bindTooltip(locationStartName, { permanent: true, direction: 'top', offset: [0, -10], className: 'location-label' });
+                        }
+
+                        const p3Marker = L.circleMarker(p3, { radius: 6, color: '#dc3545', fillColor: '#dc3545', fillOpacity: 1.0 }).addTo(fileTrajectoryLayerGroup).bindPopup(p3_popup);
+                         if (locationEndName) {
+                            p3Marker.bindTooltip(locationEndName, { permanent: true, direction: 'top', offset: [0, -10], className: 'location-label' });
+                        }
+                        
+                        L.circleMarker(p1, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(fileTrajectoryLayerGroup).bindPopup(p1_popup);
+                        L.circleMarker(p2, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(fileTrajectoryLayerGroup).bindPopup(p2_popup);
+                        
+                        displayTrajectoryData(`File Line #${index + 1}`, curvePoints, '#0055b3');
+                    }
+                });
+
+                if (allPointsForBounds.length > 0) {
+                    map.fitBounds(allPointsForBounds, { padding: [50, 50] });
+                } else {
+                     setDataPlaceholder('No valid 4-point trajectory rows could be found in the file.', 'red');
+                }
+            }
+            
+            // --- 3. Curve Calculation ---
+            function calculateCubicBezierPoints(p0, p1, p2, p3, steps) {
+                const points = [];
+                for (let t = 0; t <= 1; t += 1 / steps) {
+                    const lat = Math.pow(1 - t, 3) * p0.lat + 3 * Math.pow(1 - t, 2) * t * p1.lat + 3 * (1 - t) * Math.pow(t, 2) * p2.lat + Math.pow(t, 3) * p3.lat;
+                    const lng = Math.pow(1 - t, 3) * p0.lng + 3 * Math.pow(1 - t, 2) * t * p1.lng + 3 * (1 - t) * Math.pow(t, 2) * p2.lng + Math.pow(t, 3) * p3.lng;
+                    points.push([lat, lng]);
+                }
+                points.push([p3.lat, p3.lng]);
+                return points;
+            }
+
+            // --- 4. UI Helpers ---
+            function clearDataOutput() {
+                const container = document.getElementById('trajectory-data');
+                container.innerHTML = `<p class="text-gray-500" id="data-placeholder">Please upload a file to see trajectory data.</p>`;
+            }
+
+            function setDataPlaceholder(text, color = 'gray') {
+                const placeholder = document.getElementById('data-placeholder');
+                if(placeholder) {
+                     placeholder.textContent = text;
+                     placeholder.className = `text-${color}-500`;
+                }
+            }
+
+            function displayTrajectoryData(title, points, borderColor) {
+                const dataOutputContainer = document.getElementById('trajectory-data');
+                const placeholder = document.getElementById('data-placeholder');
+                if (placeholder) placeholder.remove();
+
+                const dataEntry = document.createElement('div');
+                dataEntry.className = 'mb-4 p-3 bg-white rounded-md shadow-sm border-l-4';
+                dataEntry.style.borderColor = borderColor;
+                let pointsHtml = points.map(p => `<li>[${p[0].toFixed(6)}, ${p[1].toFixed(6)}]</li>`).join('');
+                dataEntry.innerHTML = `
+                    <p class="font-semibold text-gray-700">${title}</p>
+                    <ul class="mt-1 list-disc list-inside text-gray-600">${pointsHtml}</ul>
+                `;
+                dataOutputContainer.appendChild(dataEntry);
+            }
+
+            // --- 5. Initializer and Event Listeners ---
+            initializeMap(); 
+
+            const fileInput = document.getElementById('file-input');
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                const fileExtension = file.name.split('.').pop().toLowerCase();
+                const processError = (error) => {
+                     console.error("Error processing file:", error);
+                     setDataPlaceholder('Error: Could not process the file.', 'red');
+                };
+
+                if (['xlsx', 'xls'].includes(fileExtension)) {
+                    reader.onload = (e) => {
+                        try {
+                            const data = new Uint8Array(e.target.result);
+                            const workbook = XLSX.read(data, { type: 'array' });
+                            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                            processAndVisualize(XLSX.utils.sheet_to_csv(worksheet));
+                        } catch (error) { processError(error); }
+                    };
+                    reader.readAsArrayBuffer(file);
+                } else if (fileExtension === 'csv') {
+                    reader.onload = (e) => {
+                        try { processAndVisualize(e.target.result); } 
+                        catch (error) { processError(error); }
+                    };
+                    reader.readAsText(file);
+                } else {
+                    setDataPlaceholder('Warning: Unsupported file type. Please upload CSV or Excel.', 'yellow');
+                    fileInput.value = '';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
+
