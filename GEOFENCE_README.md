@@ -8,64 +8,148 @@ A **geofence corridor** is a polygon buffer zone around a route path. It defines
 
 ---
 
+## Architecture
+
+The geofence system is split into two layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   GeofenceCore (Pure JS)                    │
+│  - No Leaflet, No DOM dependencies                          │
+│  - Input: Array of routes, buffer distance                  │
+│  - Output: GeoJSON FeatureCollection                        │
+├─────────────────────────────────────────────────────────────┤
+│  Core Functions:                                            │
+│  • calculateBearing()        - Compass bearing              │
+│  • destinationPoint()        - Point at bearing/distance    │
+│  • haversineDistance()       - Distance between points      │
+│  • consolidateRoutes()       - Merge connected segments     │
+│  • createCorridorPolygon()   - Build corridor polygon       │
+│  • generateCorridorGeoJSON() - Main API (returns GeoJSON)   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│               Visualization Layer (Leaflet)                 │
+│  - Uses GeofenceCore output                                 │
+│  - Renders polygons on map                                  │
+│  - Handles UI interactions                                  │
+├─────────────────────────────────────────────────────────────┤
+│  Functions:                                                 │
+│  • generateGeofences()   - Orchestrator (Core + Render)     │
+│  • exportGeofences()     - Download GeoJSON file            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Code Location
 
 All geofence logic is in **`index.html`**:
 
-| Function | Lines | Purpose |
-|----------|-------|---------|
-| `calculateBearing()` | 589-598 | Calculate compass bearing between two points |
-| `destinationPoint()` | 601-617 | Calculate destination given start, bearing, distance |
-| `createCorridorPolygon()` | 620-692 | Generate flat-ended corridor polygon |
-| `generateGeofences()` | 694-813 | Main orchestrator function |
-| `exportGeofences()` | 815-830 | Export to GeoJSON file |
+| Function | Lines | Layer | Purpose |
+|----------|-------|-------|---------|
+| `calculateBearing()` | 589-598 | Core | Compass bearing between two points |
+| `destinationPoint()` | 601-617 | Core | Point at bearing/distance |
+| `haversineDistance()` | 619-632 | Core | Distance in meters (Leaflet-free!) |
+| `consolidateRoutes()` | 635-657 | Core | Merge connected segments |
+| `createCorridorPolygon()` | 660-733 | Core | Build flat-ended corridor polygon |
+| `generateCorridorGeoJSON()` | 735-798 | Core | **Main API** - returns GeoJSON |
+| `generateGeofences()` | 800-848 | Viz | Orchestrator (calls Core + renders) |
+| `exportGeofences()` | 850-865 | Viz | Download GeoJSON file |
+
+---
+
+## Main API: `generateCorridorGeoJSON()`
+
+This is the **Leaflet-independent** function for generating geofence corridors.
+
+### Signature
+```javascript
+generateCorridorGeoJSON(allRoutes, distanceKm, options = {})
+```
+
+### Parameters
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `allRoutes` | `Array` | Array of routes. Each route is an array of `[lat, lng]` points. |
+| `distanceKm` | `number` | Buffer distance in kilometers |
+| `options.simplifyTolerance` | `number` | Turf.js simplify tolerance (default: 0.00005 ≈ 5m) |
+| `options.connectionThreshold` | `number` | Max distance (meters) to merge segments (default: 1) |
+
+### Returns
+```javascript
+{
+  type: 'FeatureCollection',
+  features: [
+    {
+      type: 'Feature',
+      properties: {
+        routeIndex: 1,
+        bufferDistanceKm: 0.1,
+        type: 'geofence_corridor'
+      },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[[lng, lat], ...]]
+      }
+    }
+  ]
+}
+```
+
+### Example Usage
+```javascript
+const routes = [
+  [[0, 0], [0, 1], [1, 1]],  // Route 1: 3 points
+  [[1, 1], [2, 1], [2, 2]]   // Route 2: 3 points (connected to Route 1)
+];
+
+const geoJSON = generateCorridorGeoJSON(routes, 0.1); // 100m buffer
+console.log(JSON.stringify(geoJSON, null, 2));
+```
 
 ---
 
 ## The 3-Step Algorithm
 
 ### Step 1: Consolidate Connected Segments
-**Lines 712-737**
+**Function: `consolidateRoutes()`**
 
 Multiple route segments that share endpoints are merged into one continuous line.
 
 **Why?** Generating corridors for separate segments creates gaps at connection points.
 
 ```javascript
-// Lines 722-729
-const p1 = L.latLng(prevEnd[0], prevEnd[1]);
-const p2 = L.latLng(nextStart[0], nextStart[1]);
-const dist = p1.distanceTo(p2);
+const dist = haversineDistance(prevEnd[0], prevEnd[1], nextStart[0], nextStart[1]);
 
-if (dist < 1) {
+if (dist < connectionThresholdMeters) {
     // Connect: append next segment (skipping duplicate first point)
-    currentRoute.push(...allCurvePoints[i].slice(1));
+    currentRoute.push(...allRoutes[i].slice(1));
 }
 ```
 
 ---
 
 ### Step 2: Simplify the Line
-**Lines 742-749**
+**Using Turf.js**
 
-The consolidated line is simplified using **Turf.js** (Ramer-Douglas-Peucker algorithm).
+The consolidated line is simplified using the **Ramer-Douglas-Peucker algorithm**.
 
 **Why?** Raw curves have 50+ points per segment. Too many points = slow performance and bumpy edges.
 
 ```javascript
-// Lines 744-749
-const geoJSONPoints = routePoints.map(p => [p[1], p[0]]); // [lng, lat] for turf
 const line = turf.lineString(geoJSONPoints);
-
-// Tolerance 0.00005 deg ≈ 5 meters
-const simplifiedLine = turf.simplify(line, { tolerance: 0.00005, highQuality: true });
-const simplifiedLatLon = simplifiedLine.geometry.coordinates.map(c => [c[1], c[0]]);
+const simplifiedLine = turf.simplify(line, { 
+    tolerance: 0.00005, // ≈ 5 meters
+    highQuality: true 
+});
 ```
 
 ---
 
 ### Step 3: Generate Flat-Ended Corridor Polygon
-**Lines 620-692** (`createCorridorPolygon` function)
+**Function: `createCorridorPolygon()`**
 
 For each point on the simplified line:
 1. Calculate the perpendicular direction (90° from travel direction)
@@ -73,18 +157,14 @@ For each point on the simplified line:
 3. At corners, use **miter join** to fill gaps
 
 ```javascript
-// Lines 672-681 - Perpendicular offset calculation
 const leftBearing = (offsetBearing - 90 + 360) % 360;
 const rightBearing = (offsetBearing + 90) % 360;
 
 const leftPoint = destinationPoint(lat, lng, leftBearing, offsetDistance);
 const rightPoint = destinationPoint(lat, lng, rightBearing, offsetDistance);
-
-leftSide.push(leftPoint);
-rightSide.push(rightPoint);
 ```
 
-**Polygon Construction** (Lines 684-689):
+**Polygon Construction**:
 ```javascript
 const polygonCoords = [
     ...leftSide,
@@ -95,28 +175,42 @@ const polygonCoords = [
 
 ---
 
-## Miter Join (Corner Filling)
-**Lines 661-669**
+## Deep Dive: Corridor Geometry Creation
 
-At interior vertices where the route changes direction, a simple perpendicular offset leaves a gap. The miter join extends the offset to fill corners.
+![Corridor Geometry Deep Dive](./corridor_geometry_deep_dive.png)
+
+The core challenge of generating a clean geofence is transforming a zero-width line into a precise, flat-ended polygon.
+
+### 1. Perpendicular Vector Engineering
+For every point on the path, we calculate the travel direction (bearing) to the next point. We rotate this vector by ±90° to find the "Left" and "Right" offset directions.
+
+### 2. The Miter Join Resolution
+When the route turns, a simple perpendicular offset creates overlaps on the inside and gaps on the outside. We resolve this using **Miter Joins**.
+
+The distance from the center point to the corner is increased based on the sharpness of the turn:
+
+$$Distance_{miter} = \frac{Distance_{base}}{\cos(\theta/2)}$$
+
+*where θ is the angle of the turn.*
 
 ```javascript
-// Lines 663-669
 const halfAngle = Math.abs(angleDiff / 2);
 const halfAngleRad = halfAngle * Math.PI / 180;
-
-// Miter calculation: distance / cos(halfAngle)
-// Limit to 3x to avoid spikes on very sharp turns
-const miterLimit = 3;
+const miterLimit = 3; // Max extension factor
 const miterFactor = Math.min(1 / Math.cos(halfAngleRad), miterLimit);
 offsetDistance = widthKm * miterFactor;
 ```
+
+### 3. Flat End Cap Precision
+Unlike `turf.buffer()` which creates circular "pill" shapes, our algorithm treats the first and last points as hard boundaries:
+- **Start Cap**: Perpendicular to the first segment
+- **End Cap**: Perpendicular to the last segment
 
 ---
 
 ## Why Not Use `turf.buffer()`?
 
-The standard Turf.js buffer function creates **rounded end caps** (circles at start/end) and **rounded corners**. 
+The standard Turf.js buffer function creates **rounded end caps** and **rounded corners**.
 
 Our custom `createCorridorPolygon()` creates:
 - ✅ Flat ends (no circles)
@@ -124,73 +218,21 @@ Our custom `createCorridorPolygon()` creates:
 
 ---
 
-## GeoJSON Export
-**Lines 800-804**
-
-```javascript
-geofenceGeoJSON = {
-    type: 'FeatureCollection',
-    features: allCorridorFeatures
-};
-```
-
-Each feature contains:
-```json
-{
-  "type": "Feature",
-  "properties": {
-    "routeIndex": 1,
-    "bufferDistanceKm": 0.1,
-    "type": "geofence_corridor"
-  },
-  "geometry": {
-    "type": "Polygon",
-    "coordinates": [[[lng, lat], ...]]
-  }
-}
-```
-
----
-
-## Deep Dive: Corridor Geometry Creation
-
-![Corridor Geometry Deep Dive](./corridor_geometry_deep_dive.png)
-
-The core challenge of generating a clean geofence is transforming a zero-width line into a precise, flat-ended polygon. We bypass standard buffering algorithms to ensure professional, recti-linear results.
-
-### 1. Perpendicular Vector Engineering
-For every point $P_i$ on the path, we calculate the travel direction (bearing) to the next point. To build the corridor wall, we rotate this vector by $\pm 90^\circ$ to find the "Left" and "Right" offset directions.
-
-```javascript
-const leftBearing = (travelBearing - 90 + 360) % 360;
-const rightBearing = (travelBearing + 90) % 360;
-```
-
-### 2. The Miter Join Resolution
-When the route turns, a simple perpendicular offset at each point would create overlaps on the inside and gaps on the outside. We resolve this using **Miter Joins**. 
-
-Instead of drawing two separate rectangles, we calculate the **Angle Bisector** (the line exactly halfway between the incoming and outgoing paths). The corridor vertex is placed along this bisector.
-
-To maintain a consistent corridor width, the distance from the center point to the corner must be increased based on the sharpness of the turn:
-$$Distance_{miter} = \frac{Distance_{base}}{\cos(\theta/2)}$$
-*where $\theta$ is the angle of the turn.*
-
-### 3. Flat End Cap Precision
-Unlike `turf.buffer()` which creates circular "pill" shapes, our algorithm treats the first and last points as hard boundaries. 
-- **Start Cap**: Perpendicular to the first segment.
-- **End Cap**: Perpendicular to the last segment.
-
-This ensures the geofence begins and ends exactly where the data does, with no rounded overhangs.
-
----
-
 ## Summary
 
-| Step | Lines | Action | Purpose |
-|------|-------|--------|---------|
-| 1 | 712-737 | Consolidate | Eliminate gaps between connected segments |
-| 2 | 742-749 | Simplify | Reduce points for performance |
-| 3 | 620-692 | Corridor Polygon | Create flat-ended buffer with miter corners |
+| Step | Function | Purpose |
+|------|----------|---------|
+| 1 | `consolidateRoutes()` | Eliminate gaps between connected segments |
+| 2 | `turf.simplify()` | Reduce points for performance |
+| 3 | `createCorridorPolygon()` | Create flat-ended buffer with miter corners |
 
 **Result**: Clean, continuous corridor polygons without gaps or circles.
 
+---
+
+## Dependencies
+
+| Library | Purpose |
+|---------|---------|
+| **Turf.js** | Line simplification (`turf.simplify`, `turf.lineString`) |
+| **Leaflet.js** | Map visualization only (not required for core) |

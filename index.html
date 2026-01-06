@@ -616,6 +616,47 @@
                 return [toDeg(lat2), toDeg(lng2)];
             }
 
+            // Helper: Calculate haversine distance between two points in meters (Leaflet-free!)
+            function haversineDistance(lat1, lng1, lat2, lng2) {
+                const R = 6371; // Earth radius in km
+                const toRad = deg => deg * Math.PI / 180;
+
+                const dLat = toRad(lat2 - lat1);
+                const dLng = toRad(lng2 - lng1);
+
+                const a = Math.sin(dLat / 2) ** 2 +
+                    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                    Math.sin(dLng / 2) ** 2;
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+                return R * c * 1000; // Return meters
+            }
+
+            // Core: Consolidate connecting route segments into continuous routes
+            function consolidateRoutes(allRoutes, connectionThresholdMeters = 1) {
+                if (allRoutes.length === 0) return [];
+
+                const consolidated = [];
+                let currentRoute = [...allRoutes[0]];
+
+                for (let i = 1; i < allRoutes.length; i++) {
+                    const prevEnd = currentRoute[currentRoute.length - 1];
+                    const nextStart = allRoutes[i][0];
+
+                    const dist = haversineDistance(prevEnd[0], prevEnd[1], nextStart[0], nextStart[1]);
+
+                    if (dist < connectionThresholdMeters) {
+                        currentRoute.push(...allRoutes[i].slice(1));
+                    } else {
+                        consolidated.push(currentRoute);
+                        currentRoute = [...allRoutes[i]];
+                    }
+                }
+                consolidated.push(currentRoute);
+
+                return consolidated;
+            }
+
             // Create a clean corridor polygon with proper corner handling (no gaps)
             function createCorridorPolygon(linePoints, widthKm) {
                 if (linePoints.length < 2) return null;
@@ -691,72 +732,48 @@
                 return polygonCoords;
             }
 
-            function generateGeofences() {
-                if (!map || !geofenceLayerGroup) return;
-                if (allCurvePoints.length === 0) return;
+            /**
+             * Core API: Generate corridor GeoJSON from route data
+             * This is the main Leaflet-independent function for generating geofence corridors.
+             * 
+             * @param {Array} allRoutes - Array of routes, each route is an array of [lat, lng] points
+             * @param {number} distanceKm - Buffer distance in kilometers
+             * @param {Object} options - Optional settings
+             * @param {number} options.simplifyTolerance - Turf.js simplify tolerance (default: 0.00005)
+             * @param {number} options.connectionThreshold - Max distance (meters) to consider segments connected (default: 1)
+             * @returns {Object} GeoJSON FeatureCollection
+             */
+            function generateCorridorGeoJSON(allRoutes, distanceKm, options = {}) {
+                const {
+                    simplifyTolerance = 0.00005,
+                    connectionThreshold = 1
+                } = options;
 
-                // Clear existing geofences
-                geofenceLayerGroup.clearLayers();
+                // Step 1: Consolidate routes
+                const consolidatedRoutes = consolidateRoutes(allRoutes, connectionThreshold);
 
-                // Get selected distance from dropdown
-                const distanceKm = parseFloat(document.getElementById('geofence-distance').value) || 0.1;
-                // Style toggle (solid vs dashed)
-                const solidStyle = document.getElementById('merge-corridors').checked;
+                // Step 2: Generate corridor for each route
+                const features = [];
 
-                // For display
-                const distanceDisplay = distanceKm >= 1 ? `${distanceKm} km` : `${distanceKm * 1000} m`;
-
-                // Create flat-ended corridor for each route using custom perpendicular offset
-                const allCorridorFeatures = [];
-
-                // Step 1: Consolidate connecting segments into continuous routes
-                // This eliminates gaps between segments that touch (dist < 1m)
-                const consolidatedRoutes = [];
-                if (allCurvePoints.length > 0) {
-                    let currentRoute = [...allCurvePoints[0]];
-
-                    for (let i = 1; i < allCurvePoints.length; i++) {
-                        const prevEnd = currentRoute[currentRoute.length - 1];
-                        const nextStart = allCurvePoints[i][0];
-
-                        // Check if they are the same point (distance < 1m)
-                        const p1 = L.latLng(prevEnd[0], prevEnd[1]);
-                        const p2 = L.latLng(nextStart[0], nextStart[1]);
-                        const dist = p1.distanceTo(p2);
-
-                        if (dist < 1) {
-                            // Connect: append next segment (skipping duplicate first point)
-                            currentRoute.push(...allCurvePoints[i].slice(1));
-                        } else {
-                            // Break: store current and start new route
-                            consolidatedRoutes.push(currentRoute);
-                            currentRoute = [...allCurvePoints[i]];
-                        }
-                    }
-                    consolidatedRoutes.push(currentRoute);
-                }
-
-                // Step 2: Create corridors for each consolidated route
                 consolidatedRoutes.forEach((routePoints, index) => {
                     try {
-                        // Simplify the consolidated route to keep performance high while following curves
-                        // We convert to GeoJSON LineString format for turf.simplify
+                        // Simplify using Turf.js
                         const geoJSONPoints = routePoints.map(p => [p[1], p[0]]); // [lng, lat] for turf
                         const line = turf.lineString(geoJSONPoints);
-
-                        // Use a sensitive tolerance (0.00005 deg approx 5 meters) to keep curve shape
-                        const simplifiedLine = turf.simplify(line, { tolerance: 0.00005, highQuality: true });
-                        const simplifiedLatLon = simplifiedLine.geometry.coordinates.map(c => [c[1], c[0]]); // back to [lat, lng]
+                        const simplifiedLine = turf.simplify(line, {
+                            tolerance: simplifyTolerance,
+                            highQuality: true
+                        });
+                        const simplifiedLatLon = simplifiedLine.geometry.coordinates.map(c => [c[1], c[0]]);
 
                         if (simplifiedLatLon.length < 2) return;
 
-                        // Create flat-ended corridor using custom function (no circles!)
+                        // Create corridor polygon
                         const corridorCoords = createCorridorPolygon(simplifiedLatLon, distanceKm);
 
                         if (corridorCoords && corridorCoords.length > 3) {
-                            // Create GeoJSON for export
                             const geoJSONCoords = corridorCoords.map(p => [p[1], p[0]]);
-                            const corridorFeature = {
+                            features.push({
                                 type: 'Feature',
                                 properties: {
                                     routeIndex: index + 1,
@@ -767,46 +784,64 @@
                                     type: 'Polygon',
                                     coordinates: [geoJSONCoords]
                                 }
-                            };
-                            allCorridorFeatures.push(corridorFeature);
-
-                            // Add to map
-                            const polygon = L.polygon(corridorCoords, {
-                                color: '#3b82f6',
-                                weight: 2,
-                                opacity: solidStyle ? 0.8 : 0.6,
-                                dashArray: solidStyle ? null : '8, 4',
-                                fillColor: '#3b82f6',
-                                fillOpacity: solidStyle ? 0.15 : 0.10
                             });
-
-                            polygon.bindPopup(`
-                                <div class="popup-title">Geofence Corridor</div>
-                                <div class="popup-content">
-                                    <b>Route Part #:</b> ${index + 1}<br>
-                                    <b>Points:</b> ${routePoints.length}<br>
-                                    <b>Corridor Width:</b> ±${distanceDisplay}
-                                </div>
-                            `);
-                            polygon.addTo(geofenceLayerGroup);
                         }
                     } catch (error) {
-                        console.error('Error creating corridor for consolidated route', index, error);
+                        console.error('Error creating corridor for route', index, error);
                     }
                 });
 
-                if (allCorridorFeatures.length === 0) return;
-
-                // Store for export
-                geofenceGeoJSON = {
+                return {
                     type: 'FeatureCollection',
-                    features: allCorridorFeatures
+                    features: features
                 };
+            }
+
+            function generateGeofences() {
+                if (!map || !geofenceLayerGroup) return;
+                if (allCurvePoints.length === 0) return;
+
+                // Clear existing geofences
+                geofenceLayerGroup.clearLayers();
+
+                // Get settings from UI
+                const distanceKm = parseFloat(document.getElementById('geofence-distance').value) || 0.1;
+                const solidStyle = document.getElementById('merge-corridors').checked;
+                const distanceDisplay = distanceKm >= 1 ? `${distanceKm} km` : `${distanceKm * 1000} m`;
+
+                // Generate GeoJSON using core library (Leaflet-free!)
+                geofenceGeoJSON = generateCorridorGeoJSON(allCurvePoints, distanceKm);
+
+                if (geofenceGeoJSON.features.length === 0) return;
+
+                // Visualize on map (Leaflet-specific)
+                geofenceGeoJSON.features.forEach((feature) => {
+                    // Convert GeoJSON coords back to Leaflet format [lat, lng]
+                    const leafletCoords = feature.geometry.coordinates[0].map(c => [c[1], c[0]]);
+
+                    const polygon = L.polygon(leafletCoords, {
+                        color: '#3b82f6',
+                        weight: 2,
+                        opacity: solidStyle ? 0.8 : 0.6,
+                        dashArray: solidStyle ? null : '8, 4',
+                        fillColor: '#3b82f6',
+                        fillOpacity: solidStyle ? 0.15 : 0.10
+                    });
+
+                    polygon.bindPopup(`
+                        <div class="popup-title">Geofence Corridor</div>
+                        <div class="popup-content">
+                            <b>Route Part #:</b> ${feature.properties.routeIndex}<br>
+                            <b>Corridor Width:</b> ±${distanceDisplay}
+                        </div>
+                    `);
+                    polygon.addTo(geofenceLayerGroup);
+                });
 
                 // Enable export button
                 document.getElementById('export-geofence').disabled = false;
 
-                // Add geofence layer to map if not already added
+                // Add layer to map
                 if (layerStates.geofence && !map.hasLayer(geofenceLayerGroup)) {
                     map.addLayer(geofenceLayerGroup);
                 }
