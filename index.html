@@ -1,13 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trajectory Visualizer</title>
-    
+
     <!-- Leaflet CSS for the interactive map -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+
     <!-- Leaflet JavaScript library -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
@@ -18,81 +19,347 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
-    
+
     <!-- SheetJS/xlsx library for parsing Excel files -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <!-- Turf.js for geospatial operations (geofence buffer) -->
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 
     <style>
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f0f2f5;
         }
-        #map { 
-            height: 65vh; 
+
+        #map {
+            height: 65vh;
             border-radius: 0.5rem;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             background-color: #e9ecef;
         }
+
         .leaflet-popup-content-wrapper {
             border-radius: 0.5rem;
         }
+
         .leaflet-popup-content {
             font-family: 'Inter', sans-serif;
             font-size: 14px;
         }
+
         .popup-title {
             font-weight: 700;
             color: #333;
             margin-bottom: 4px;
         }
+
         .popup-content code {
             background-color: #e2e8f0;
             padding: 2px 6px;
             border-radius: 4px;
             font-family: monospace;
         }
+
         /* Styling for the permanent location labels */
         .location-label {
             background-color: rgba(255, 255, 255, 0.85);
             border-color: #555;
             border-radius: 4px;
             font-weight: bold;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
             padding: 3px 6px;
             font-size: 12px;
             color: #333;
         }
+
+        /* Hide labels when class is applied */
+        #map.hide-labels .location-label {
+            display: none !important;
+        }
+
+        /* Custom Toggle Switch Styles */
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: 0.3s;
+            border-radius: 24px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .toggle-switch input:checked+.toggle-slider {
+            background-color: var(--toggle-color, #3b82f6);
+        }
+
+        .toggle-switch input:checked+.toggle-slider:before {
+            transform: translateX(20px);
+        }
+
+        .toggle-switch input:focus+.toggle-slider {
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+        }
+
+        /* Layer Control Panel */
+        .layer-control-panel {
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border: 1px solid #e2e8f0;
+        }
+
+        .layer-toggle-item {
+            background: white;
+            border: 1px solid #e2e8f0;
+            transition: all 0.2s ease;
+        }
+
+        .layer-toggle-item:hover {
+            border-color: #cbd5e1;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .layer-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* Master toggle special styling */
+        .master-toggle {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            color: white;
+        }
+
+        .master-toggle .layer-indicator {
+            background: linear-gradient(135deg, #3b82f6, #10b981, #ef4444, #f97316);
+        }
+
+        /* Geofence Settings Panel */
+        .geofence-panel {
+            background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+            border: 1px solid #93c5fd;
+        }
+
+        .geofence-panel h3 {
+            color: #1e40af;
+        }
+
+        .distance-select {
+            padding: 8px 12px;
+            border: 1px solid #93c5fd;
+            border-radius: 8px;
+            background: white;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1e40af;
+            cursor: pointer;
+            min-width: 100px;
+            transition: all 0.2s ease;
+        }
+
+        .distance-select:hover {
+            border-color: #3b82f6;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2);
+        }
+
+        .distance-select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+        }
+
+        .geofence-toggle-item {
+            background: white;
+            border: 1px solid #93c5fd;
+        }
     </style>
 </head>
+
 <body class="p-4 md:p-8">
 
     <div class="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg">
         <header class="mb-6 text-center">
             <h1 class="text-3xl font-bold text-gray-800">Asset Trajectory Visualizer</h1>
-            <p class="text-gray-600 mt-1">Upload an Excel or CSV file to visualize asset trajectories as smooth paths.</p>
+            <p class="text-gray-600 mt-1">Upload an Excel or CSV file to visualize asset trajectories as smooth paths.
+            </p>
         </header>
 
         <div class="max-w-xl mx-auto mb-8">
             <!-- File Upload Section -->
             <div class="p-4 border-2 border-dashed rounded-lg bg-gray-50">
-                <label for="file-input" class="block text-lg font-medium text-gray-700 mb-2">Upload Trajectory File</label>
+                <label for="file-input" class="block text-lg font-medium text-gray-700 mb-2">Upload Trajectory
+                    File</label>
                 <input type="file" id="file-input" accept=".csv, .xlsx, .xls" class="block w-full text-sm text-gray-500
                     file:mr-4 file:py-2 file:px-4
                     file:rounded-full file:border-0
                     file:text-sm file:font-semibold
                     file:bg-blue-50 file:text-blue-700
-                    hover:file:bg-blue-100 cursor-pointer"/>
+                    hover:file:bg-blue-100 cursor-pointer" />
+            </div>
+        </div>
+
+        <!-- Layer Visibility Controls -->
+        <div class="layer-control-panel rounded-lg p-4 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Layer Visibility Controls</h3>
+                <span class="text-xs text-gray-500">Toggle layers to improve visibility</span>
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+                <!-- Master Toggle -->
+                <div class="layer-toggle-item master-toggle flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator"></div>
+                    <span class="text-sm font-medium whitespace-nowrap">All Layers</span>
+                    <label class="toggle-switch" style="--toggle-color: #64748b;">
+                        <input type="checkbox" id="toggle-all">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Routes Toggle -->
+                <div class="layer-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator" style="background-color: #0055b3;"></div>
+                    <span class="text-sm font-medium text-gray-700 whitespace-nowrap">Routes</span>
+                    <label class="toggle-switch" style="--toggle-color: #0055b3;">
+                        <input type="checkbox" id="toggle-routes" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Start Points Toggle -->
+                <div class="layer-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator" style="background-color: #28a745;"></div>
+                    <span class="text-sm font-medium text-gray-700 whitespace-nowrap">Start Points</span>
+                    <label class="toggle-switch" style="--toggle-color: #28a745;">
+                        <input type="checkbox" id="toggle-start" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- End Points Toggle -->
+                <div class="layer-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator" style="background-color: #dc3545;"></div>
+                    <span class="text-sm font-medium text-gray-700 whitespace-nowrap">End Points</span>
+                    <label class="toggle-switch" style="--toggle-color: #dc3545;">
+                        <input type="checkbox" id="toggle-end" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Control Points Toggle -->
+                <div class="layer-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator" style="background-color: #ff7800;"></div>
+                    <span class="text-sm font-medium text-gray-700 whitespace-nowrap">Control Points</span>
+                    <label class="toggle-switch" style="--toggle-color: #ff7800;">
+                        <input type="checkbox" id="toggle-control">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Labels Toggle -->
+                <div class="layer-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator" style="background-color: #6b7280; border: 2px solid #374151;"></div>
+                    <span class="text-sm font-medium text-gray-700 whitespace-nowrap">Labels</span>
+                    <label class="toggle-switch" style="--toggle-color: #6b7280;">
+                        <input type="checkbox" id="toggle-labels">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Geofence Settings -->
+        <div class="geofence-panel rounded-lg p-4 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold uppercase tracking-wide">Geofence Settings</h3>
+                <span class="text-xs text-blue-600">Buffer zone around routes</span>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-4">
+                <!-- Geofence Toggle -->
+                <div class="geofence-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <div class="layer-indicator"
+                        style="background: linear-gradient(135deg, #3b82f6, #60a5fa); border: 2px dashed #1e40af;">
+                    </div>
+                    <span class="text-sm font-medium text-blue-800 whitespace-nowrap">Geofence</span>
+                    <label class="toggle-switch" style="--toggle-color: #3b82f6;">
+                        <input type="checkbox" id="toggle-geofence">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Distance Selector -->
+                <div class="flex items-center gap-2">
+                    <label for="geofence-distance" class="text-sm font-medium text-blue-800">Buffer Distance:</label>
+                    <select id="geofence-distance" class="distance-select">
+                        <option value="0.05" selected>50 m</option>
+                        <option value="0.1" selected>100 m</option>
+                        <option value="0.25">250 m</option>
+                        <option value="0.5">500 m</option>
+                        <option value="1">1 km</option>
+                        <option value="2">2 km</option>
+                        <option value="5">5 km</option>
+                        <option value="10">10 km</option>
+                        <option value="25">25 km</option>
+                    </select>
+                </div>
+
+                <!-- Style Toggle -->
+                <div class="geofence-toggle-item flex items-center gap-3 px-4 py-2.5 rounded-lg">
+                    <span class="text-sm font-medium text-blue-800 whitespace-nowrap">Solid Style</span>
+                    <label class="toggle-switch" style="--toggle-color: #1e40af;">
+                        <input type="checkbox" id="merge-corridors" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Export Button -->
+                <button id="export-geofence"
+                    class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled>
+                    Export GeoJSON
+                </button>
             </div>
         </div>
 
         <!-- The map will be rendered in this div -->
-        <div id="map"></div>
+        <div id="map" class="hide-labels"></div>
 
         <!-- The raw lat/long data will be displayed here -->
         <div class="mt-8">
             <h2 class="text-2xl font-bold text-gray-800">Extracted Trajectory Data</h2>
             <p class="text-gray-600 mb-4">Coordinate data from the uploaded file will appear here.</p>
-            <div id="trajectory-data" class="bg-gray-100 p-4 rounded-lg shadow-inner h-96 overflow-y-auto text-sm font-mono">
+            <div id="trajectory-data"
+                class="bg-gray-100 p-4 rounded-lg shadow-inner h-96 overflow-y-auto text-sm font-mono">
                 <p class="text-gray-500" id="data-placeholder">Please upload a file to see trajectory data.</p>
             </div>
         </div>
@@ -101,7 +368,26 @@
     <script>
         window.addEventListener('load', function () {
             let map;
-            let fileTrajectoryLayerGroup;
+
+            // Separate layer groups for different element types (for toggle functionality)
+            let routesLayerGroup;
+            let startMarkersLayerGroup;
+            let endMarkersLayerGroup;
+            let controlPointsLayerGroup;
+            let geofenceLayerGroup;
+
+            // Store all curve points for geofence regeneration
+            let allCurvePoints = [];
+
+            // Track layer states for toggle functionality
+            const layerStates = {
+                routes: true,
+                start: true,
+                end: true,
+                control: false,
+                labels: false,
+                geofence: false
+            };
 
             // --- 1. Map Initialization ---
             function initializeMap() {
@@ -114,18 +400,40 @@
                 }
 
                 if (map) map.remove();
-                map = L.map('map').setView([-2.5, 118], 5); 
+                map = L.map('map').setView([-2.5, 118], 5);
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }).addTo(map);
-                
-                fileTrajectoryLayerGroup = L.layerGroup().addTo(map);
+
+                // Initialize separate layer groups
+                // Geofence layer added first so it renders below routes
+                geofenceLayerGroup = L.layerGroup();
+                if (layerStates.geofence) geofenceLayerGroup.addTo(map);
+
+                routesLayerGroup = L.layerGroup();
+                if (layerStates.routes) routesLayerGroup.addTo(map);
+
+                startMarkersLayerGroup = L.layerGroup();
+                if (layerStates.start) startMarkersLayerGroup.addTo(map);
+
+                endMarkersLayerGroup = L.layerGroup();
+                if (layerStates.end) endMarkersLayerGroup.addTo(map);
+
+                controlPointsLayerGroup = L.layerGroup();
+                if (layerStates.control) controlPointsLayerGroup.addTo(map);
             }
-            
+
             // --- 2. Data Processing for Uploaded Files ---
             function processAndVisualize(csvContent) {
                 if (!map) return; // Don't run if map failed to initialize
-                fileTrajectoryLayerGroup.clearLayers();
+
+                // Clear all layer groups
+                routesLayerGroup.clearLayers();
+                startMarkersLayerGroup.clearLayers();
+                endMarkersLayerGroup.clearLayers();
+                controlPointsLayerGroup.clearLayers();
+                geofenceLayerGroup.clearLayers();
+                allCurvePoints = []; // Reset curve points storage
                 clearDataOutput();
 
                 const allPointsForBounds = [];
@@ -138,12 +446,12 @@
 
                 rows.forEach((row, index) => {
                     const cols = row.split(',');
-                    
+
                     const parseLocalizedFloat = (val) => {
                         if (typeof val !== 'string' || val.trim() === '') return NaN;
                         return parseFloat(val.replace(',', '.'));
                     };
-                    
+
                     const locationStartName = cols[0] ? cols[0].trim() : null;
                     const locationEndName = cols[7] ? cols[7].trim() : null;
 
@@ -153,7 +461,7 @@
                     const p3_lat = parseLocalizedFloat(cols[8]), p3_lng = parseLocalizedFloat(cols[9]);
 
                     if (!isNaN(p0_lat) && !isNaN(p0_lng) && !isNaN(p1_lat) && !isNaN(p1_lng) && !isNaN(p2_lat) && !isNaN(p2_lng) && !isNaN(p3_lat) && !isNaN(p3_lng)) {
-                        
+
                         const p0 = L.latLng(p0_lat, p0_lng);
                         const p1 = L.latLng(p1_lat, p1_lng);
                         const p2 = L.latLng(p2_lat, p2_lng);
@@ -162,37 +470,53 @@
                         const curvePoints = calculateCubicBezierPoints(p0, p1, p2, p3, 50);
 
                         allPointsForBounds.push(...curvePoints);
-                        L.polyline(curvePoints, { color: '#0055b3', weight: 3, opacity: 0.8 }).addTo(fileTrajectoryLayerGroup);
-                        
-                        const p0_popup = `<div class="popup-title">Start Point (P0)</div><div class="popup-content"><b>Name:</b> ${locationStartName || 'N/A'}<br><b>From:</b> code>latitude_start</code>, <code>longitude_start</code></div>`;
+
+                        // Store curve points for geofence generation
+                        allCurvePoints.push(curvePoints);
+
+                        // Add route polyline to routes layer group
+                        L.polyline(curvePoints, { color: '#0055b3', weight: 3, opacity: 0.8 }).addTo(routesLayerGroup);
+
+                        const p0_popup = `<div class="popup-title">Start Point (P0)</div><div class="popup-content"><b>Name:</b> ${locationStartName || 'N/A'}<br><b>From:</b> <code>latitude_start</code>, <code>longitude_start</code></div>`;
                         const p3_popup = `<div class="popup-title">End Point (P3)</div><div class="popup-content"><b>Name:</b> ${locationEndName || 'N/A'}<br><b>From:</b> <code>latitude_end</code>, <code>longitude_end</code></div>`;
                         const p1_popup = `<div class="popup-title">Control Point 1 (P1)</div><div class="popup-content">From columns: <code>trajectory_latitude</code>, <code>trajectory_longitude</code></div>`;
                         const p2_popup = `<div class="popup-title">Control Point 2 (P2)</div><div class="popup-content">From columns: <code>trajectory_latitude_2</code>, <code>trajectory_longitude_2</code></div>`;
 
-                        const p0Marker = L.circleMarker(p0, { radius: 6, color: '#28a745', fillColor: '#28a745', fillOpacity: 1.0 }).addTo(fileTrajectoryLayerGroup).bindPopup(p0_popup);
+                        // Add start marker (P0) to start markers layer group
+                        const p0Marker = L.circleMarker(p0, { radius: 6, color: '#28a745', fillColor: '#28a745', fillOpacity: 1.0 }).addTo(startMarkersLayerGroup).bindPopup(p0_popup);
                         if (locationStartName) {
                             p0Marker.bindTooltip(locationStartName, { permanent: true, direction: 'top', offset: [0, -10], className: 'location-label' });
                         }
 
-                        const p3Marker = L.circleMarker(p3, { radius: 6, color: '#dc3545', fillColor: '#dc3545', fillOpacity: 1.0 }).addTo(fileTrajectoryLayerGroup).bindPopup(p3_popup);
-                         if (locationEndName) {
+                        // Add end marker (P3) to end markers layer group
+                        const p3Marker = L.circleMarker(p3, { radius: 6, color: '#dc3545', fillColor: '#dc3545', fillOpacity: 1.0 }).addTo(endMarkersLayerGroup).bindPopup(p3_popup);
+                        if (locationEndName) {
                             p3Marker.bindTooltip(locationEndName, { permanent: true, direction: 'top', offset: [0, -10], className: 'location-label' });
                         }
-                        
-                        L.circleMarker(p1, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(fileTrajectoryLayerGroup).bindPopup(p1_popup);
-                        L.circleMarker(p2, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(fileTrajectoryLayerGroup).bindPopup(p2_popup);
-                        
+
+                        // Add control points (P1, P2) to control points layer group
+                        L.circleMarker(p1, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(controlPointsLayerGroup).bindPopup(p1_popup);
+                        L.circleMarker(p2, { radius: 4, color: '#ff7800', fillColor: '#ff7800', fillOpacity: 0.8 }).addTo(controlPointsLayerGroup).bindPopup(p2_popup);
+
                         displayTrajectoryData(`File Line #${index + 1}`, curvePoints, '#0055b3');
                     }
                 });
 
                 if (allPointsForBounds.length > 0) {
                     map.fitBounds(allPointsForBounds, { padding: [50, 50] });
+
+                    // Re-apply current layer visibility states after loading data
+                    applyLayerStates();
+
+                    // Generate geofences if toggle is enabled
+                    if (layerStates.geofence) {
+                        generateGeofences();
+                    }
                 } else {
-                     setDataPlaceholder('No valid 4-point trajectory rows could be found in the file.', 'red');
+                    setDataPlaceholder('No valid 4-point trajectory rows could be found in the file.', 'red');
                 }
             }
-            
+
             // --- 3. Curve Calculation ---
             function calculateCubicBezierPoints(p0, p1, p2, p3, steps) {
                 const points = [];
@@ -213,9 +537,9 @@
 
             function setDataPlaceholder(text, color = 'gray') {
                 const placeholder = document.getElementById('data-placeholder');
-                if(placeholder) {
-                     placeholder.textContent = text;
-                     placeholder.className = `text-${color}-500`;
+                if (placeholder) {
+                    placeholder.textContent = text;
+                    placeholder.className = `text-${color}-500`;
                 }
             }
 
@@ -235,9 +559,384 @@
                 dataOutputContainer.appendChild(dataEntry);
             }
 
-            // --- 5. Initializer and Event Listeners ---
-            initializeMap(); 
+            // --- 5. Layer Toggle Functions ---
+            function toggleLayer(layerGroup, show) {
+                if (!map || !layerGroup) return;
+                if (show) {
+                    if (!map.hasLayer(layerGroup)) {
+                        map.addLayer(layerGroup);
+                    }
+                } else {
+                    if (map.hasLayer(layerGroup)) {
+                        map.removeLayer(layerGroup);
+                    }
+                }
+            }
 
+            function toggleLabels(show) {
+                const mapDiv = document.getElementById('map');
+                if (show) {
+                    mapDiv.classList.remove('hide-labels');
+                } else {
+                    mapDiv.classList.add('hide-labels');
+                }
+            }
+
+            // --- 6. Geofence Functions ---
+            let geofenceGeoJSON = null; // Store for export
+
+            // Helper: Calculate bearing between two points (in degrees)
+            function calculateBearing(lat1, lng1, lat2, lng2) {
+                const toRad = deg => deg * Math.PI / 180;
+                const toDeg = rad => rad * 180 / Math.PI;
+
+                const dLng = toRad(lng2 - lng1);
+                const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+                const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+                    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+                return (toDeg(Math.atan2(y, x)) + 360) % 360;
+            }
+
+            // Helper: Calculate destination point given start, bearing, and distance
+            function destinationPoint(lat, lng, bearing, distanceKm) {
+                const toRad = deg => deg * Math.PI / 180;
+                const toDeg = rad => rad * 180 / Math.PI;
+                const R = 6371; // Earth radius in km
+
+                const lat1 = toRad(lat);
+                const lng1 = toRad(lng);
+                const brng = toRad(bearing);
+                const d = distanceKm / R;
+
+                const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) +
+                    Math.cos(lat1) * Math.sin(d) * Math.cos(brng));
+                const lng2 = lng1 + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(lat1),
+                    Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+
+                return [toDeg(lat2), toDeg(lng2)];
+            }
+
+            // Create a clean corridor polygon with proper corner handling (no gaps)
+            function createCorridorPolygon(linePoints, widthKm) {
+                if (linePoints.length < 2) return null;
+
+                const leftSide = [];
+                const rightSide = [];
+
+                for (let i = 0; i < linePoints.length; i++) {
+                    const [lat, lng] = linePoints[i];
+
+                    let offsetBearing, offsetDistance;
+
+                    if (i === 0) {
+                        // First point: use bearing to next point
+                        const [nextLat, nextLng] = linePoints[i + 1];
+                        const bearing = calculateBearing(lat, lng, nextLat, nextLng);
+                        offsetBearing = bearing;
+                        offsetDistance = widthKm;
+                    } else if (i === linePoints.length - 1) {
+                        // Last point: use bearing from previous point
+                        const [prevLat, prevLng] = linePoints[i - 1];
+                        const bearing = calculateBearing(prevLat, prevLng, lat, lng);
+                        offsetBearing = bearing;
+                        offsetDistance = widthKm;
+                    } else {
+                        // Interior point: use angle bisector for proper corner filling
+                        const [prevLat, prevLng] = linePoints[i - 1];
+                        const [nextLat, nextLng] = linePoints[i + 1];
+
+                        const inBearing = calculateBearing(prevLat, prevLng, lat, lng);
+                        const outBearing = calculateBearing(lat, lng, nextLat, nextLng);
+
+                        // Calculate the angle difference
+                        let angleDiff = outBearing - inBearing;
+                        if (angleDiff > 180) angleDiff -= 360;
+                        if (angleDiff < -180) angleDiff += 360;
+
+                        // Bisector is the average of in and out bearings
+                        // For the offset, we use perpendicular to the bisector
+                        const bisectorBearing = inBearing + angleDiff / 2;
+                        offsetBearing = bisectorBearing;
+
+                        // Adjust distance at corners to fill gaps
+                        // When there's a sharp turn, we need to extend the offset
+                        const halfAngle = Math.abs(angleDiff / 2);
+                        const halfAngleRad = halfAngle * Math.PI / 180;
+                        // Miter calculation: distance / cos(halfAngle)
+                        // Limit the extension to avoid very long points at sharp turns
+                        const miterLimit = 3; // Maximum extension factor
+                        const miterFactor = Math.min(1 / Math.cos(halfAngleRad), miterLimit);
+                        offsetDistance = widthKm * miterFactor;
+                    }
+
+                    // Calculate perpendicular bearings (90° left and right)
+                    const leftBearing = (offsetBearing - 90 + 360) % 360;
+                    const rightBearing = (offsetBearing + 90) % 360;
+
+                    // Calculate offset points
+                    const leftPoint = destinationPoint(lat, lng, leftBearing, offsetDistance);
+                    const rightPoint = destinationPoint(lat, lng, rightBearing, offsetDistance);
+
+                    leftSide.push(leftPoint);
+                    rightSide.push(rightPoint);
+                }
+
+                // Create closed polygon: left side forward, then right side backward
+                const polygonCoords = [
+                    ...leftSide,
+                    ...rightSide.reverse(),
+                    leftSide[0] // Close the polygon
+                ];
+
+                return polygonCoords;
+            }
+
+            function generateGeofences() {
+                if (!map || !geofenceLayerGroup) return;
+                if (allCurvePoints.length === 0) return;
+
+                // Clear existing geofences
+                geofenceLayerGroup.clearLayers();
+
+                // Get selected distance from dropdown
+                const distanceKm = parseFloat(document.getElementById('geofence-distance').value) || 0.1;
+                // Style toggle (solid vs dashed)
+                const solidStyle = document.getElementById('merge-corridors').checked;
+
+                // For display
+                const distanceDisplay = distanceKm >= 1 ? `${distanceKm} km` : `${distanceKm * 1000} m`;
+
+                // Create flat-ended corridor for each route using custom perpendicular offset
+                const allCorridorFeatures = [];
+
+                // Step 1: Consolidate connecting segments into continuous routes
+                // This eliminates gaps between segments that touch (dist < 1m)
+                const consolidatedRoutes = [];
+                if (allCurvePoints.length > 0) {
+                    let currentRoute = [...allCurvePoints[0]];
+
+                    for (let i = 1; i < allCurvePoints.length; i++) {
+                        const prevEnd = currentRoute[currentRoute.length - 1];
+                        const nextStart = allCurvePoints[i][0];
+
+                        // Check if they are the same point (distance < 1m)
+                        const p1 = L.latLng(prevEnd[0], prevEnd[1]);
+                        const p2 = L.latLng(nextStart[0], nextStart[1]);
+                        const dist = p1.distanceTo(p2);
+
+                        if (dist < 1) {
+                            // Connect: append next segment (skipping duplicate first point)
+                            currentRoute.push(...allCurvePoints[i].slice(1));
+                        } else {
+                            // Break: store current and start new route
+                            consolidatedRoutes.push(currentRoute);
+                            currentRoute = [...allCurvePoints[i]];
+                        }
+                    }
+                    consolidatedRoutes.push(currentRoute);
+                }
+
+                // Step 2: Create corridors for each consolidated route
+                consolidatedRoutes.forEach((routePoints, index) => {
+                    try {
+                        // Simplify the consolidated route to keep performance high while following curves
+                        // We convert to GeoJSON LineString format for turf.simplify
+                        const geoJSONPoints = routePoints.map(p => [p[1], p[0]]); // [lng, lat] for turf
+                        const line = turf.lineString(geoJSONPoints);
+
+                        // Use a sensitive tolerance (0.00005 deg approx 5 meters) to keep curve shape
+                        const simplifiedLine = turf.simplify(line, { tolerance: 0.00005, highQuality: true });
+                        const simplifiedLatLon = simplifiedLine.geometry.coordinates.map(c => [c[1], c[0]]); // back to [lat, lng]
+
+                        if (simplifiedLatLon.length < 2) return;
+
+                        // Create flat-ended corridor using custom function (no circles!)
+                        const corridorCoords = createCorridorPolygon(simplifiedLatLon, distanceKm);
+
+                        if (corridorCoords && corridorCoords.length > 3) {
+                            // Create GeoJSON for export
+                            const geoJSONCoords = corridorCoords.map(p => [p[1], p[0]]);
+                            const corridorFeature = {
+                                type: 'Feature',
+                                properties: {
+                                    routeIndex: index + 1,
+                                    bufferDistanceKm: distanceKm,
+                                    type: 'geofence_corridor'
+                                },
+                                geometry: {
+                                    type: 'Polygon',
+                                    coordinates: [geoJSONCoords]
+                                }
+                            };
+                            allCorridorFeatures.push(corridorFeature);
+
+                            // Add to map
+                            const polygon = L.polygon(corridorCoords, {
+                                color: '#3b82f6',
+                                weight: 2,
+                                opacity: solidStyle ? 0.8 : 0.6,
+                                dashArray: solidStyle ? null : '8, 4',
+                                fillColor: '#3b82f6',
+                                fillOpacity: solidStyle ? 0.15 : 0.10
+                            });
+
+                            polygon.bindPopup(`
+                                <div class="popup-title">Geofence Corridor</div>
+                                <div class="popup-content">
+                                    <b>Route Part #:</b> ${index + 1}<br>
+                                    <b>Points:</b> ${routePoints.length}<br>
+                                    <b>Corridor Width:</b> ±${distanceDisplay}
+                                </div>
+                            `);
+                            polygon.addTo(geofenceLayerGroup);
+                        }
+                    } catch (error) {
+                        console.error('Error creating corridor for consolidated route', index, error);
+                    }
+                });
+
+                if (allCorridorFeatures.length === 0) return;
+
+                // Store for export
+                geofenceGeoJSON = {
+                    type: 'FeatureCollection',
+                    features: allCorridorFeatures
+                };
+
+                // Enable export button
+                document.getElementById('export-geofence').disabled = false;
+
+                // Add geofence layer to map if not already added
+                if (layerStates.geofence && !map.hasLayer(geofenceLayerGroup)) {
+                    map.addLayer(geofenceLayerGroup);
+                }
+            }
+
+            function exportGeofences() {
+                if (!geofenceGeoJSON) {
+                    alert('No geofences to export. Enable geofence and load data first.');
+                    return;
+                }
+
+                const dataStr = JSON.stringify(geofenceGeoJSON, null, 2);
+                const blob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `geofences_${new Date().toISOString().slice(0, 10)}.geojson`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            }
+
+            function applyLayerStates() {
+                toggleLayer(geofenceLayerGroup, layerStates.geofence);
+                toggleLayer(routesLayerGroup, layerStates.routes);
+                toggleLayer(startMarkersLayerGroup, layerStates.start);
+                toggleLayer(endMarkersLayerGroup, layerStates.end);
+                toggleLayer(controlPointsLayerGroup, layerStates.control);
+                toggleLabels(layerStates.labels);
+            }
+
+            function updateMasterToggle() {
+                const allOn = Object.values(layerStates).every(v => v);
+                const masterToggle = document.getElementById('toggle-all');
+                if (masterToggle) {
+                    masterToggle.checked = allOn;
+                }
+            }
+
+            function setAllLayers(checked) {
+                layerStates.routes = checked;
+                layerStates.start = checked;
+                layerStates.end = checked;
+                layerStates.control = checked;
+                layerStates.labels = checked;
+
+                // Update all individual toggle checkboxes
+                document.getElementById('toggle-routes').checked = checked;
+                document.getElementById('toggle-start').checked = checked;
+                document.getElementById('toggle-end').checked = checked;
+                document.getElementById('toggle-control').checked = checked;
+                document.getElementById('toggle-labels').checked = checked;
+
+                applyLayerStates();
+            }
+
+            // --- 6. Initializer and Event Listeners ---
+            initializeMap();
+
+            // Toggle event listeners
+            document.getElementById('toggle-all').addEventListener('change', (e) => {
+                setAllLayers(e.target.checked);
+            });
+
+            document.getElementById('toggle-routes').addEventListener('change', (e) => {
+                layerStates.routes = e.target.checked;
+                toggleLayer(routesLayerGroup, e.target.checked);
+                updateMasterToggle();
+            });
+
+            document.getElementById('toggle-start').addEventListener('change', (e) => {
+                layerStates.start = e.target.checked;
+                toggleLayer(startMarkersLayerGroup, e.target.checked);
+                updateMasterToggle();
+            });
+
+            document.getElementById('toggle-end').addEventListener('change', (e) => {
+                layerStates.end = e.target.checked;
+                toggleLayer(endMarkersLayerGroup, e.target.checked);
+                updateMasterToggle();
+            });
+
+            document.getElementById('toggle-control').addEventListener('change', (e) => {
+                layerStates.control = e.target.checked;
+                toggleLayer(controlPointsLayerGroup, e.target.checked);
+                updateMasterToggle();
+            });
+
+            document.getElementById('toggle-labels').addEventListener('change', (e) => {
+                layerStates.labels = e.target.checked;
+                toggleLabels(e.target.checked);
+                updateMasterToggle();
+            });
+
+            // Geofence toggle event listener
+            document.getElementById('toggle-geofence').addEventListener('change', (e) => {
+                layerStates.geofence = e.target.checked;
+                if (e.target.checked) {
+                    // Generate geofences if enabling and we have data
+                    if (allCurvePoints.length > 0) {
+                        generateGeofences();
+                    }
+                    toggleLayer(geofenceLayerGroup, true);
+                } else {
+                    toggleLayer(geofenceLayerGroup, false);
+                }
+            });
+
+            // Geofence distance change event listener
+            document.getElementById('geofence-distance').addEventListener('change', () => {
+                // Regenerate geofences with new distance if toggle is on
+                if (layerStates.geofence && allCurvePoints.length > 0) {
+                    generateGeofences();
+                }
+            });
+
+            // Merge corridors toggle event listener
+            document.getElementById('merge-corridors').addEventListener('change', () => {
+                // Regenerate geofences with merge setting if toggle is on
+                if (layerStates.geofence && allCurvePoints.length > 0) {
+                    generateGeofences();
+                }
+            });
+
+            // Export geofence button event listener
+            document.getElementById('export-geofence').addEventListener('click', exportGeofences);
+
+            // File input handler
             const fileInput = document.getElementById('file-input');
             fileInput.addEventListener('change', (event) => {
                 const file = event.target.files[0];
@@ -246,8 +945,8 @@
                 const reader = new FileReader();
                 const fileExtension = file.name.split('.').pop().toLowerCase();
                 const processError = (error) => {
-                     console.error("Error processing file:", error);
-                     setDataPlaceholder('Error: Could not process the file.', 'red');
+                    console.error("Error processing file:", error);
+                    setDataPlaceholder('Error: Could not process the file.', 'red');
                 };
 
                 if (['xlsx', 'xls'].includes(fileExtension)) {
@@ -262,7 +961,7 @@
                     reader.readAsArrayBuffer(file);
                 } else if (fileExtension === 'csv') {
                     reader.onload = (e) => {
-                        try { processAndVisualize(e.target.result); } 
+                        try { processAndVisualize(e.target.result); }
                         catch (error) { processError(error); }
                     };
                     reader.readAsText(file);
@@ -274,5 +973,5 @@
         });
     </script>
 </body>
-</html>
 
+</html>
