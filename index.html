@@ -869,6 +869,23 @@
 
                 if (geofenceGeoJSON.features.length === 0) return;
 
+                // Line mode: draw the implied tolerance corridor behind the line so the
+                // buffer distance is visible on the map. Visual only, not exported.
+                if (geofenceType === 'line') {
+                    generateCorridorGeoJSON(allCurvePoints, distanceKm).features.forEach((feature) => {
+                        const leafletCoords = feature.geometry.coordinates[0].map(c => [c[1], c[0]]);
+                        L.polygon(leafletCoords, {
+                            color: '#3b82f6',
+                            weight: 1.5,
+                            opacity: solidStyle ? 0.5 : 0.35,
+                            dashArray: solidStyle ? null : '8, 4',
+                            fillColor: '#3b82f6',
+                            fillOpacity: 0.10,
+                            interactive: false
+                        }).addTo(geofenceLayerGroup);
+                    });
+                }
+
                 // Visualize on map (Leaflet-specific)
                 geofenceGeoJSON.features.forEach((feature) => {
                     if (feature.geometry.type === 'LineString') {
