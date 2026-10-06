@@ -301,7 +301,7 @@
         <div class="geofence-panel rounded-lg p-4 mb-4">
             <div class="flex items-center justify-between mb-3">
                 <h3 class="text-sm font-semibold uppercase tracking-wide">Geofence Settings</h3>
-                <span class="text-xs text-blue-600">Buffer zone around routes</span>
+                <span class="text-xs text-blue-600">Corridor polygon or line along routes</span>
             </div>
 
             <div class="flex flex-wrap items-center gap-4">
@@ -315,6 +315,15 @@
                         <input type="checkbox" id="toggle-geofence">
                         <span class="toggle-slider"></span>
                     </label>
+                </div>
+
+                <!-- Geofence Type Selector -->
+                <div class="flex items-center gap-2">
+                    <label for="geofence-type" class="text-sm font-medium text-blue-800">Type:</label>
+                    <select id="geofence-type" class="distance-select">
+                        <option value="corridor" selected>Corridor (Polygon)</option>
+                        <option value="line">Line (LineString)</option>
+                    </select>
                 </div>
 
                 <!-- Distance Selector -->
@@ -732,28 +741,16 @@
                 return polygonCoords;
             }
 
-            /**
-             * Core API: Generate corridor GeoJSON from route data
-             * This is the main Leaflet-independent function for generating geofence corridors.
-             * 
-             * @param {Array} allRoutes - Array of routes, each route is an array of [lat, lng] points
-             * @param {number} distanceKm - Buffer distance in kilometers
-             * @param {Object} options - Optional settings
-             * @param {number} options.simplifyTolerance - Turf.js simplify tolerance (default: 0.00005)
-             * @param {number} options.connectionThreshold - Max distance (meters) to consider segments connected (default: 1)
-             * @returns {Object} GeoJSON FeatureCollection
-             */
-            function generateCorridorGeoJSON(allRoutes, distanceKm, options = {}) {
+            // Core: Shared pipeline. Consolidate connected routes, then simplify each with Turf.js.
+            // Returns an array of simplified routes as [lat, lng] points (routes with < 2 points dropped).
+            function consolidateAndSimplifyRoutes(allRoutes, options = {}) {
                 const {
                     simplifyTolerance = 0.00005,
                     connectionThreshold = 1
                 } = options;
 
-                // Step 1: Consolidate routes
                 const consolidatedRoutes = consolidateRoutes(allRoutes, connectionThreshold);
-
-                // Step 2: Generate corridor for each route
-                const features = [];
+                const simplifiedRoutes = [];
 
                 consolidatedRoutes.forEach((routePoints, index) => {
                     try {
@@ -768,28 +765,83 @@
 
                         if (simplifiedLatLon.length < 2) return;
 
-                        // Create corridor polygon
-                        const corridorCoords = createCorridorPolygon(simplifiedLatLon, distanceKm);
-
-                        if (corridorCoords && corridorCoords.length > 3) {
-                            const geoJSONCoords = corridorCoords.map(p => [p[1], p[0]]);
-                            features.push({
-                                type: 'Feature',
-                                properties: {
-                                    routeIndex: index + 1,
-                                    bufferDistanceKm: distanceKm,
-                                    type: 'geofence_corridor'
-                                },
-                                geometry: {
-                                    type: 'Polygon',
-                                    coordinates: [geoJSONCoords]
-                                }
-                            });
-                        }
+                        simplifiedRoutes.push(simplifiedLatLon);
                     } catch (error) {
-                        console.error('Error creating corridor for route', index, error);
+                        console.error('Error simplifying route', index, error);
                     }
                 });
+
+                return simplifiedRoutes;
+            }
+
+            /**
+             * Core API: Generate corridor GeoJSON from route data
+             * This is the main Leaflet-independent function for generating geofence corridors.
+             *
+             * @param {Array} allRoutes - Array of routes, each route is an array of [lat, lng] points
+             * @param {number} distanceKm - Buffer distance in kilometers
+             * @param {Object} options - Optional settings
+             * @param {number} options.simplifyTolerance - Turf.js simplify tolerance (default: 0.00005)
+             * @param {number} options.connectionThreshold - Max distance (meters) to consider segments connected (default: 1)
+             * @returns {Object} GeoJSON FeatureCollection
+             */
+            function generateCorridorGeoJSON(allRoutes, distanceKm, options = {}) {
+                const simplifiedRoutes = consolidateAndSimplifyRoutes(allRoutes, options);
+                const features = [];
+
+                simplifiedRoutes.forEach((simplifiedLatLon, index) => {
+                    // Create corridor polygon
+                    const corridorCoords = createCorridorPolygon(simplifiedLatLon, distanceKm);
+
+                    if (corridorCoords && corridorCoords.length > 3) {
+                        const geoJSONCoords = corridorCoords.map(p => [p[1], p[0]]);
+                        features.push({
+                            type: 'Feature',
+                            properties: {
+                                routeIndex: index + 1,
+                                bufferDistanceKm: distanceKm,
+                                type: 'geofence_corridor'
+                            },
+                            geometry: {
+                                type: 'Polygon',
+                                coordinates: [geoJSONCoords]
+                            }
+                        });
+                    }
+                });
+
+                return {
+                    type: 'FeatureCollection',
+                    features: features
+                };
+            }
+
+            /**
+             * Core API: Generate line geofence GeoJSON from route data.
+             * Emits the route centerline as LineString features instead of a buffered polygon.
+             * `bufferDistanceKm` is kept as a property: downstream geofence engines use it as
+             * the allowed distance from the line.
+             *
+             * @param {Array} allRoutes - Array of routes, each route is an array of [lat, lng] points
+             * @param {number} distanceKm - Allowed distance from the line in kilometers
+             * @param {Object} options - Same options as generateCorridorGeoJSON
+             * @returns {Object} GeoJSON FeatureCollection
+             */
+            function generateLineGeofenceGeoJSON(allRoutes, distanceKm, options = {}) {
+                const simplifiedRoutes = consolidateAndSimplifyRoutes(allRoutes, options);
+
+                const features = simplifiedRoutes.map((routePoints, index) => ({
+                    type: 'Feature',
+                    properties: {
+                        routeIndex: index + 1,
+                        bufferDistanceKm: distanceKm,
+                        type: 'geofence_line'
+                    },
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: routePoints.map(p => [p[1], p[0]])
+                    }
+                }));
 
                 return {
                     type: 'FeatureCollection',
@@ -807,16 +859,48 @@
                 // Get settings from UI
                 const distanceKm = parseFloat(document.getElementById('geofence-distance').value) || 0.1;
                 const solidStyle = document.getElementById('merge-corridors').checked;
+                const geofenceType = document.getElementById('geofence-type').value;
                 const distanceDisplay = distanceKm >= 1 ? `${distanceKm} km` : `${distanceKm * 1000} m`;
 
                 // Generate GeoJSON using core library (Leaflet-free!)
-                geofenceGeoJSON = generateCorridorGeoJSON(allCurvePoints, distanceKm);
+                geofenceGeoJSON = geofenceType === 'line'
+                    ? generateLineGeofenceGeoJSON(allCurvePoints, distanceKm)
+                    : generateCorridorGeoJSON(allCurvePoints, distanceKm);
 
                 if (geofenceGeoJSON.features.length === 0) return;
 
                 // Visualize on map (Leaflet-specific)
                 geofenceGeoJSON.features.forEach((feature) => {
-                    // Convert GeoJSON coords back to Leaflet format [lat, lng]
+                    if (feature.geometry.type === 'LineString') {
+                        // Line geofence: white casing under a navy line so it reads
+                        // apart from the darker route polylines below it
+                        const leafletCoords = feature.geometry.coordinates.map(c => [c[1], c[0]]);
+
+                        L.polyline(leafletCoords, {
+                            color: '#ffffff',
+                            weight: 7,
+                            opacity: 0.6
+                        }).addTo(geofenceLayerGroup);
+
+                        const line = L.polyline(leafletCoords, {
+                            color: '#1e40af',
+                            weight: 4,
+                            opacity: solidStyle ? 0.95 : 0.75,
+                            dashArray: solidStyle ? null : '8, 4'
+                        });
+
+                        line.bindPopup(`
+                            <div class="popup-title">Geofence Line</div>
+                            <div class="popup-content">
+                                <b>Route Part #:</b> ${feature.properties.routeIndex}<br>
+                                <b>Allowed Distance:</b> ±${distanceDisplay}
+                            </div>
+                        `);
+                        line.addTo(geofenceLayerGroup);
+                        return;
+                    }
+
+                    // Corridor geofence (polygon)
                     const leafletCoords = feature.geometry.coordinates[0].map(c => [c[1], c[0]]);
 
                     const polygon = L.polygon(leafletCoords, {
@@ -859,7 +943,8 @@
 
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `geofences_${new Date().toISOString().slice(0, 10)}.geojson`;
+                const geofenceType = document.getElementById('geofence-type').value === 'line' ? 'line' : 'corridor';
+                link.download = `geofences_${geofenceType}_${new Date().toISOString().slice(0, 10)}.geojson`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -949,6 +1034,14 @@
                     toggleLayer(geofenceLayerGroup, true);
                 } else {
                     toggleLayer(geofenceLayerGroup, false);
+                }
+            });
+
+            // Geofence type change event listener
+            document.getElementById('geofence-type').addEventListener('change', () => {
+                // Regenerate geofences with new type if toggle is on
+                if (layerStates.geofence && allCurvePoints.length > 0) {
+                    generateGeofences();
                 }
             });
 
