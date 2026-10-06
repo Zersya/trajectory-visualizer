@@ -17,6 +17,10 @@ The app can generate and export two geofence types from the same route data (sel
 
 Both types share the same pipeline: consolidate connected segments, simplify with Turf.js, then emit GeoJSON features.
 
+### Rendering
+
+Line geofences render the way providers like Traccar and Wialon draw them: the line itself is the geofence and the width is an attribute, not part of the geometry. The map shows a stroked line only. To see the implied corridor while previewing, enable **Preview Buffer** (visible when Type is Line): it draws the buffer's edges as a dashed outline, no fill. The polygon corridor type keeps its filled band.
+
 ---
 
 ## Architecture
@@ -60,16 +64,18 @@ All geofence logic is in **`index.html`**:
 
 | Function | Lines | Layer | Purpose |
 |----------|-------|-------|---------|
-| `calculateBearing()` | 598-607 | Core | Compass bearing between two points |
-| `destinationPoint()` | 610-626 | Core | Point at bearing/distance |
-| `haversineDistance()` | 629-642 | Core | Distance in meters (Leaflet-free!) |
-| `consolidateRoutes()` | 645-667 | Core | Merge connected segments |
-| `createCorridorPolygon()` | 670-741 | Core | Build flat-ended corridor polygon |
-| `consolidateAndSimplifyRoutes()` | 746-773 | Core | Shared pipeline: consolidate + simplify |
-| `generateCorridorGeoJSON()` | 788-816 | Core | Corridor API - returns Polygon GeoJSON |
-| `generateLineGeofenceGeoJSON()` | 830-850 | Core | Line API - returns LineString GeoJSON |
-| `generateGeofences()` | 852-932 | Viz | Orchestrator (calls Core + renders) |
-| `exportGeofences()` | 934-951 | Viz | Download GeoJSON file |
+| `calculateBearing()` | 620-629 | Core | Compass bearing between two points |
+| `destinationPoint()` | 632-648 | Core | Point at bearing/distance |
+| `haversineDistance()` | 651-664 | Core | Distance in meters (Leaflet-free!) |
+| `consolidateRoutes()` | 667-689 | Core | Merge connected segments |
+| `createCorridorPolygon()` | 692-763 | Core | Build flat-ended corridor polygon |
+| `consolidateAndSimplifyRoutes()` | 768-795 | Core | Shared pipeline: consolidate + simplify |
+| `generateCorridorGeoJSON()` | 810-838 | Core | Corridor API - returns Polygon GeoJSON |
+| `generateLineGeofenceGeoJSON()` | 852-872 | Core | Line API - returns LineString GeoJSON |
+| `generateGeofences()` | 874-973 | Viz | Orchestrator (calls Core + renders) |
+| `geofencesToWKT()` | 975-991 | Core | Serialize features as WKT (Traccar `lat lon` order) |
+| `geofencesToGPX()` | 993-1007 | Core | Serialize features as GPX tracks |
+| `exportGeofences()` | 1009-1043 | Viz | Download in the selected format |
 
 ---
 
@@ -146,6 +152,23 @@ Same signature as `generateCorridorGeoJSON()`, but returns `LineString` features
 ```javascript
 const geoJSON = generateLineGeofenceGeoJSON(routes, 0.1);
 ```
+
+---
+
+## Export Formats
+
+The **Format** selector in Geofence Settings controls the export file:
+
+| Format | File | Provider fit |
+|--------|------|--------------|
+| `GeoJSON` | `geofences_<type>_<date>.geojson` | Generic GIS, custom engines |
+| `WKT (Traccar)` | `geofences_<type>_<date>.wkt` | Traccar's `geofence.area` field — one `LINESTRING (lat lon, ...)` or `POLYGON ((lat lon, ...))` per line, matching Traccar's latitude-first WKT convention |
+| `GPX` | `geofences_<type>_<date>.gpx` | Traccar web UI import (each feature becomes one `<trk>`) and other GPS tools |
+
+Notes:
+- Traccar stores geofences as WKT and treats `LINESTRING` plus the geofence's `polylineDistance` attribute as a line geofence. The exported `bufferDistanceKm` property (GeoJSON) is the equivalent width attribute (Wialon-style).
+- Howen-style platforms import GPX/KML; GPX export covers that path.
+- In WKT and GPX output, polygon features serialize their outer ring.
 
 ---
 

@@ -354,11 +354,30 @@
                     </label>
                 </div>
 
+                <!-- Buffer Preview Toggle (line geofence only) -->
+                <div id="preview-buffer-item" class="geofence-toggle-item items-center gap-3 px-4 py-2.5 rounded-lg hidden">
+                    <span class="text-sm font-medium text-blue-800 whitespace-nowrap">Preview Buffer</span>
+                    <label class="toggle-switch" style="--toggle-color: #3b82f6;">
+                        <input type="checkbox" id="preview-buffer">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Export Format Selector -->
+                <div class="flex items-center gap-2">
+                    <label for="export-format" class="text-sm font-medium text-blue-800">Format:</label>
+                    <select id="export-format" class="distance-select">
+                        <option value="geojson" selected>GeoJSON</option>
+                        <option value="wkt">WKT (Traccar)</option>
+                        <option value="gpx">GPX</option>
+                    </select>
+                </div>
+
                 <!-- Export Button -->
                 <button id="export-geofence"
                     class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled>
-                    Export GeoJSON
+                    Export
                 </button>
             </div>
         </div>
@@ -872,18 +891,18 @@
 
                 if (geofenceGeoJSON.features.length === 0) return;
 
-                // Line mode: draw the implied tolerance corridor behind the line so the
-                // buffer distance is visible on the map. Visual only, not exported.
-                if (geofenceType === 'line') {
+                // Line mode with Preview Buffer on: draw corridor edges as dashed
+                // outline only (no fill) so the implied width stays readable without
+                // looking like a polygon geofence. Visual only, not exported.
+                if (geofenceType === 'line' && document.getElementById('preview-buffer').checked) {
                     generateCorridorGeoJSON(allCurvePoints, distanceKm).features.forEach((feature) => {
                         const leafletCoords = feature.geometry.coordinates[0].map(c => [c[1], c[0]]);
                         L.polygon(leafletCoords, {
                             color: '#3b82f6',
-                            weight: 2.5,
-                            opacity: solidStyle ? 0.75 : 0.55,
-                            dashArray: solidStyle ? null : '8, 4',
-                            fillColor: '#3b82f6',
-                            fillOpacity: 0.18,
+                            weight: 2,
+                            opacity: 0.7,
+                            dashArray: '4, 6',
+                            fill: false,
                             interactive: false
                         }).addTo(geofenceLayerGroup);
                     });
@@ -951,20 +970,72 @@
                 }
             }
 
+            // Serialize features to WKT. Traccar convention: coordinates are "lat lon"
+            // (latitude first) to match its GeofencePolyline/GeofencePolygon parsers.
+            function geofencesToWKT(featureCollection) {
+                return featureCollection.features.map((f) => {
+                    if (f.geometry.type === 'LineString') {
+                        const pts = f.geometry.coordinates.map(c => `${c[1]} ${c[0]}`).join(', ');
+                        return `LINESTRING (${pts})`;
+                    }
+                    if (f.geometry.type === 'Polygon') {
+                        const rings = f.geometry.coordinates
+                            .map(ring => `(${ring.map(c => `${c[1]} ${c[0]}`).join(', ')})`)
+                            .join(', ');
+                        return `POLYGON (${rings})`;
+                    }
+                    return '';
+                }).filter(Boolean).join('\n');
+            }
+
+            // Serialize features to GPX. Each feature becomes one <trk>/<trkseg>,
+            // matching Traccar's GPX geofence import (trkpt -> LINESTRING).
+            function geofencesToGPX(featureCollection) {
+                let gpx = '<?xml version="1.0" encoding="UTF-8"?>\n';
+                gpx += '<gpx version="1.1" creator="trajectory-visualizer" xmlns="http://www.topografix.com/GPX/1/1">\n';
+                featureCollection.features.forEach((f) => {
+                    const coords = f.geometry.type === 'Polygon'
+                        ? f.geometry.coordinates[0]
+                        : f.geometry.coordinates;
+                    const name = `${f.properties.type}_${f.properties.routeIndex}`;
+                    gpx += `  <trk><name>${name}</name><trkseg>\n`;
+                    coords.forEach(c => { gpx += `    <trkpt lat="${c[1]}" lon="${c[0]}"/>\n`; });
+                    gpx += '  </trkseg></trk>\n';
+                });
+                gpx += '</gpx>\n';
+                return gpx;
+            }
+
             function exportGeofences() {
                 if (!geofenceGeoJSON) {
                     alert('No geofences to export. Enable geofence and load data first.');
                     return;
                 }
 
-                const dataStr = JSON.stringify(geofenceGeoJSON, null, 2);
-                const blob = new Blob([dataStr], { type: 'application/json' });
+                const format = document.getElementById('export-format').value;
+                const geofenceType = document.getElementById('geofence-type').value === 'line' ? 'line' : 'corridor';
+
+                let dataStr, mime, ext;
+                if (format === 'wkt') {
+                    dataStr = geofencesToWKT(geofenceGeoJSON);
+                    mime = 'text/plain';
+                    ext = 'wkt';
+                } else if (format === 'gpx') {
+                    dataStr = geofencesToGPX(geofenceGeoJSON);
+                    mime = 'application/gpx+xml';
+                    ext = 'gpx';
+                } else {
+                    dataStr = JSON.stringify(geofenceGeoJSON, null, 2);
+                    mime = 'application/json';
+                    ext = 'geojson';
+                }
+
+                const blob = new Blob([dataStr], { type: mime });
                 const url = URL.createObjectURL(blob);
 
                 const link = document.createElement('a');
                 link.href = url;
-                const geofenceType = document.getElementById('geofence-type').value === 'line' ? 'line' : 'corridor';
-                link.download = `geofences_${geofenceType}_${new Date().toISOString().slice(0, 10)}.geojson`;
+                link.download = `geofences_${geofenceType}_${new Date().toISOString().slice(0, 10)}.${ext}`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -1058,8 +1129,19 @@
             });
 
             // Geofence type change event listener
-            document.getElementById('geofence-type').addEventListener('change', () => {
+            document.getElementById('geofence-type').addEventListener('change', (e) => {
+                // Buffer preview only applies to line geofences
+                const previewItem = document.getElementById('preview-buffer-item');
+                previewItem.classList.toggle('hidden', e.target.value !== 'line');
+                previewItem.classList.toggle('flex', e.target.value === 'line');
                 // Regenerate geofences with new type if toggle is on
+                if (layerStates.geofence && allCurvePoints.length > 0) {
+                    generateGeofences();
+                }
+            });
+
+            // Buffer preview toggle event listener (line geofence only)
+            document.getElementById('preview-buffer').addEventListener('change', () => {
                 if (layerStates.geofence && allCurvePoints.length > 0) {
                     generateGeofences();
                 }
