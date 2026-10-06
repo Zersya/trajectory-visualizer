@@ -6,6 +6,17 @@
 
 A **geofence corridor** is a polygon buffer zone around a route path. It defines the acceptable area where a vehicle/object should stay while traveling along its planned route.
 
+## Geofence Types
+
+The app can generate and export two geofence types from the same route data (select in the Geofence Settings panel):
+
+| Type | Geometry | Feature `type` | Use case |
+|------|----------|----------------|----------|
+| **Corridor** | `Polygon` | `geofence_corridor` | Area geofence, the buffer is baked into the geometry |
+| **Line** | `LineString` | `geofence_line` | Line geofence for engines that take a path plus a tolerance (`bufferDistanceKm` is exported as a property) |
+
+Both types share the same pipeline: consolidate connected segments, simplify with Turf.js, then emit GeoJSON features.
+
 ---
 
 ## Architecture
@@ -49,14 +60,16 @@ All geofence logic is in **`index.html`**:
 
 | Function | Lines | Layer | Purpose |
 |----------|-------|-------|---------|
-| `calculateBearing()` | 589-598 | Core | Compass bearing between two points |
-| `destinationPoint()` | 601-617 | Core | Point at bearing/distance |
-| `haversineDistance()` | 619-632 | Core | Distance in meters (Leaflet-free!) |
-| `consolidateRoutes()` | 635-657 | Core | Merge connected segments |
-| `createCorridorPolygon()` | 660-733 | Core | Build flat-ended corridor polygon |
-| `generateCorridorGeoJSON()` | 735-798 | Core | **Main API** - returns GeoJSON |
-| `generateGeofences()` | 800-848 | Viz | Orchestrator (calls Core + renders) |
-| `exportGeofences()` | 850-865 | Viz | Download GeoJSON file |
+| `calculateBearing()` | 598-607 | Core | Compass bearing between two points |
+| `destinationPoint()` | 610-626 | Core | Point at bearing/distance |
+| `haversineDistance()` | 629-642 | Core | Distance in meters (Leaflet-free!) |
+| `consolidateRoutes()` | 645-667 | Core | Merge connected segments |
+| `createCorridorPolygon()` | 670-741 | Core | Build flat-ended corridor polygon |
+| `consolidateAndSimplifyRoutes()` | 746-773 | Core | Shared pipeline: consolidate + simplify |
+| `generateCorridorGeoJSON()` | 788-816 | Core | Corridor API - returns Polygon GeoJSON |
+| `generateLineGeofenceGeoJSON()` | 830-850 | Core | Line API - returns LineString GeoJSON |
+| `generateGeofences()` | 852-932 | Viz | Orchestrator (calls Core + renders) |
+| `exportGeofences()` | 934-951 | Viz | Download GeoJSON file |
 
 ---
 
@@ -107,6 +120,31 @@ const routes = [
 
 const geoJSON = generateCorridorGeoJSON(routes, 0.1); // 100m buffer
 console.log(JSON.stringify(geoJSON, null, 2));
+```
+
+---
+
+## Line Geofence API: `generateLineGeofenceGeoJSON()`
+
+Same signature as `generateCorridorGeoJSON()`, but returns `LineString` features:
+
+```javascript
+{
+  type: 'Feature',
+  properties: {
+    routeIndex: 1,
+    bufferDistanceKm: 0.1,      // exported as the line's tolerance
+    type: 'geofence_line'
+  },
+  geometry: {
+    type: 'LineString',
+    coordinates: [[lng, lat], ...]
+  }
+}
+```
+
+```javascript
+const geoJSON = generateLineGeofenceGeoJSON(routes, 0.1);
 ```
 
 ---
